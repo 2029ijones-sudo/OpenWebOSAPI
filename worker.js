@@ -714,20 +714,19 @@ async function handlePackageRequest(path, corsHeaders, env) {
     
   // Try multiple CDNs - Better order and more sources
 const sources = [
-  // Try jsDelivr first (most reliable, no blocking)
-  { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/+esm`, type: 'esm' },
-  { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}`, type: 'commonjs' },
-  
-  // Then unpkg (also reliable)
-  { url: `https://unpkg.com/${packageName}@${version}?module`, type: 'esm' },
+  // Try these first - they're more permissive
   { url: `https://unpkg.com/${packageName}@${version}`, type: 'commonjs' },
+  { url: `https://unpkg.com/${packageName}@${version}?module`, type: 'esm' },
   
-  // Then jspm.dev (good ESM support)
-  { url: `https://jspm.dev/${packageName}@${version}`, type: 'esm' },
+  // Then try jsDelivr (might still work for some packages)
+  { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}`, type: 'commonjs' },
+  { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/+esm`, type: 'esm' },
   
-  // Finally esm.sh and skypack (they block more often)
-  { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
+  // Alternative CDNs
+  { url: `https://cdnjs.cloudflare.com/ajax/libs/${packageName}/${version}/${packageName}.min.js`, type: 'commonjs' },
   { url: `https://cdn.skypack.dev/${packageName}@${version}`, type: 'esm' },
+  { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
+  { url: `https://jspm.dev/${packageName}@${version}`, type: 'esm' }
 ];
     
 let code = null;
