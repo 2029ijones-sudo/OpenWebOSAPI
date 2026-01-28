@@ -1597,5 +1597,5 @@ function generateBundleLoader(packages, host) {
   };
 })();`;
 }
-  }
-}
+
+
