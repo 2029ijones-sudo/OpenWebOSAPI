@@ -700,13 +700,13 @@ async function handlePackageRequest(path, corsHeaders, env) {
       cleanEntryPoint = cleanEntryPoint.substring(2);
     }
     
-    // Try multiple CDNs
-    const sources = [
-      { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
-      { url: `https://esm.sh/${packageName}`, type: 'esm' },
-      { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/${cleanEntryPoint}`, type: 'auto' },
-      { url: `https://unpkg.com/${packageName}@${version}/${cleanEntryPoint}`, type: 'auto' },
-    ];
+   // Try multiple CDNs - USE ONLY THESE TWO
+const sources = [
+  { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
+  { url: `https://esm.sh/${packageName}`, type: 'esm' },
+  { url: `https://cdn.skypack.dev/${packageName}@${version}`, type: 'esm' },
+  { url: `https://cdn.skypack.dev/${packageName}`, type: 'esm' },
+];
     
     let code = null;
     let sourceUsed = null;
