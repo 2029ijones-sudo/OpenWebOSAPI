@@ -642,33 +642,31 @@ async function handlePackageRequest(path, corsHeaders, env) {
       });
     }
     
-   // Get package info from npm registry
-const registryUrl = version === 'latest' 
-  ? `https://registry.npmjs.org/${encodeURIComponent(packageName)}`
-  : `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
-
-// FIX 1: Change variable name from 'response' to 'registryRes'
-// FIX 2: Change 'source.url' to 'registryUrl'
-// FIX 3: Accept header should be 'application/json' not 'application/javascript'
-const registryRes = await fetch(registryUrl, {
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': 'application/json'  // ← JSON for npm registry
-  }
-});
-
-if (!registryRes.ok) {
-  if (registryRes.status === 404) {
-    return new Response(JSON.stringify({ 
-      error: `Package "${packageName}" not found`,
-      suggestion: 'Check the package name or try a different version'
-    }), { 
-      status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    // Get package info from npm registry
+    const registryUrl = version === 'latest' 
+      ? `https://registry.npmjs.org/${encodeURIComponent(packageName)}`
+      : `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
+    
+    const registryRes = await fetch(registryUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+      }
     });
-  }
-  throw new Error(`Registry error: ${registryRes.status} ${registryRes.statusText}`);
-}
+    
+    if (!registryRes.ok) {
+      if (registryRes.status === 404) {
+        return new Response(JSON.stringify({ 
+          error: `Package "${packageName}" not found`,
+          suggestion: 'Check the package name or try a different version'
+        }), { 
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      throw new Error(`Registry error: ${registryRes.status} ${registryRes.statusText}`);
+    }
+    
     const packageData = await registryRes.json();
     
     // Get actual version if 'latest' was requested
@@ -704,9 +702,9 @@ if (!registryRes.ok) {
     
     // Try multiple CDNs
     const sources = [
-      { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/+esm`, type: 'esm' },
+      { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
+      { url: `https://esm.sh/${packageName}`, type: 'esm' },
       { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/${cleanEntryPoint}`, type: 'auto' },
-      { url: `https://unpkg.com/${packageName}@${version}`, type: 'auto' },
       { url: `https://unpkg.com/${packageName}@${version}/${cleanEntryPoint}`, type: 'auto' },
     ];
     
@@ -717,10 +715,17 @@ if (!registryRes.ok) {
       try {
         const response = await fetch(source.url, {
           headers: {
-           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',  // ← CHANGED!
-        'Accept': 'application/javascript, */*'
-      }
-    });
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Sec-Fetch-Dest': 'script',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Referer': 'https://openwebosapi.2029ijones.workers.dev/',
+            'Origin': 'https://openwebosapi.2029ijones.workers.dev'
+          }
+        });
         
         if (response.ok) {
           code = await response.text();
@@ -732,24 +737,32 @@ if (!registryRes.ok) {
       }
     }
     
-  if (!code) {
-  // Try to get from unpkg directly
-  try {
-    const unpkgUrl = `https://unpkg.com/${packageName}@${version}`;
-    const response = await fetch(unpkgUrl, {
-      headers: {  // ← ADD THESE HEADERS!
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/javascript, */*'
+    // FIX: Missing closing braces - the fallback code was in the wrong place!
+    if (!code) {
+      // Try to get from unpkg directly (fallback)
+      try {
+        const unpkgUrl = `https://unpkg.com/${packageName}@${version}`;
+        const response = await fetch(unpkgUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Sec-Fetch-Dest': 'script',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Referer': 'https://openwebosapi.2029ijones.workers.dev/',
+            'Origin': 'https://openwebosapi.2029ijones.workers.dev'
+          }
+        });
+        if (response.ok) {
+          code = await response.text();
+          sourceUsed = unpkgUrl;
+        }
+      } catch (error) {
+        // Ignore
       }
-    });
-    if (response.ok) {
-      code = await response.text();
-      sourceUsed = unpkgUrl;
     }
-  } catch (error) {
-    // Ignore
-  }
-}
     
     if (!code) {
       throw new Error(`Could not retrieve source code. Package may not be browser-compatible.`);
