@@ -865,7 +865,7 @@ async function handleBundleRequest(request, corsHeaders) {
       try {
         const [name, version = 'latest'] = pkg.split('@');
         
-      // TO THIS:
+      
 const url = `https://unpkg.com/${name}@${version}`;
 const res = await fetch(url, {
   headers: {
