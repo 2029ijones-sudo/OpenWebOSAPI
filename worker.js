@@ -1,4 +1,4 @@
-// worker.js - FIXED OpenWebOS API
+// worker.js - FIXED OpenWebOS API with CORRECT structure
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -22,7 +22,7 @@ window.OpenWebOS = {
   version: '3.0.0',
   cache: new Map(),
   
-  require: async (packageName, version = 'latest') => {
+  require: async function(packageName, version = 'latest') {
     const cacheKey = \`\${packageName}@\${version}\`;
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey);
@@ -68,11 +68,7 @@ window.OpenWebOS = {
       };
       
       // Execute package code
-      const executionWrapper = \`(function(module, exports, require, global, process, Buffer) {
-        \${data.code}
-      })\`;
-      
-      const factory = eval(executionWrapper);
+      const factory = new Function('module', 'exports', 'require', 'global', 'process', 'Buffer', data.code);
       const globalObj = typeof window !== 'undefined' ? window : globalThis;
       
       factory(
@@ -123,19 +119,19 @@ window.OpenWebOS = {
     
     // Handle package requests - COMPLEX PROPER WAY
     if (path.startsWith('/v1/pkg/')) {
-      return handlePackageRequest(path, corsHeaders);
+      return await handlePackageRequest(path, corsHeaders);
     }
     
     if (path === '/v1/compile') {
-      return handleCompileRequest(request, corsHeaders);
+      return await handleCompileRequest(request, corsHeaders);
     }
     
     if (path === '/v1/bundle') {
-      return handleBundleRequest(request, corsHeaders);
+      return await handleBundleRequest(request, corsHeaders);
     }
     
     if (path === '/v1/search') {
-      return handleSearchRequest(request, corsHeaders);
+      return await handleSearchRequest(request, corsHeaders);
     }
     
     // Only show API info for root path
@@ -154,7 +150,7 @@ window.OpenWebOS = {
         },
         example: `Add <script src="https://${host}/v1/embed.js"></script> to HTML`
       }), {
-        headers: corsHeaders
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
     
@@ -163,8 +159,8 @@ window.OpenWebOS = {
       status: 404,
       headers: corsHeaders
     });
-  } // ← THIS WAS MISSING: closes fetch() function
-}; // ← THIS WAS MISSING: closes export default object
+  }
+};
 
 // COMPLEX: Handle package requests properly
 async function handlePackageRequest(path, corsHeaders) {
@@ -260,21 +256,23 @@ async function handlePackageRequest(path, corsHeaders) {
       stack: error.stack
     }), {
       status: 500,
-      headers: corsHeaders
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
 }
 
 // Determine best entry point for browser
 function getBrowserEntryPoint(packageData) {
-  return (
+  const entry = 
     packageData.browser ||
     packageData.unpkg ||
     packageData.jsdelivr ||
     packageData.module ||
     packageData.main ||
-    'index.js'
-  );
+    'index.js';
+  
+  // Ensure .js extension
+  return entry.endsWith('.js') ? entry : `${entry}.js`;
 }
 
 // Process code for browser compatibility
@@ -287,8 +285,8 @@ function processCodeForBrowser(code, packageName, entryPoint) {
     /require\(['"]([^'"]+)['"]\)/g,
     (match, dep) => {
       if (dep.startsWith('./') || dep.startsWith('../')) {
-        // Relative require - convert to dependency
-        return `require('${dep}')`;
+        // Keep relative requires as-is for now
+        return match;
       }
       return `require('${dep}')`;
     }
@@ -346,56 +344,45 @@ function processCodeForBrowser(code, packageName, entryPoint) {
 
 // Convert CommonJS to ES Module
 function convertCommonJsToEsModule(code) {
-  // Wrap in module context
   return `
 const module = { exports: {} };
 const exports = module.exports;
-let __webpack_require__;
 
 ${code}
 
 // Convert to ES Module
-if (module.exports && typeof module.exports === 'object') {
-  if (module.exports.__esModule) {
+const __exports = module.exports;
+if (__exports && typeof __exports === 'object') {
+  if (__exports.__esModule) {
     // Already ES module
-    const __exports = module.exports;
     export default __exports.default || __exports;
     for (const key in __exports) {
-      if (key !== 'default' && __exports.hasOwnProperty(key)) {
-        Object.defineProperty(exports, key, {
-          enumerable: true,
-          get: () => __exports[key]
-        });
+      if (key !== 'default') {
+        export const ${key} = __exports[key];
       }
     }
   } else {
     // CommonJS module
-    const __exports = module.exports;
     export default __exports;
     if (__exports && typeof __exports === 'object') {
       for (const key in __exports) {
-        if (__exports.hasOwnProperty(key)) {
-          Object.defineProperty(exports, key, {
-            enumerable: true,
-            get: () => __exports[key]
-          });
-        }
+        export const ${key} = __exports[key];
       }
     }
   }
 } else {
-  export default module.exports;
+  export default __exports;
 }
 `;
 }
 
-// Extract file from tarball (simplified version)
+// Extract file from tarball
 async function extractFromTarball(tarballUrl, entryPoint) {
-  // This is a simplified version - in production you'd need proper .tgz extraction
   try {
-    // For now, try to get the file directly from npm
+    // For now, try to get the file directly from npm using unpkg
     const packageName = tarballUrl.split('/').slice(-2)[0];
-    const version = tarballUrl.split('/').slice(-1)[0].replace(/\.tgz$/, '');
+    const versionMatch = tarballUrl.match(/\/([^\/]+)\.tgz$/);
+    const version = versionMatch ? versionMatch[1] : 'latest';
     
     // Try to get from unpkg as raw file
     const unpkgUrl = `https://unpkg.com/${packageName}@${version}/${entryPoint}`;
@@ -405,12 +392,12 @@ async function extractFromTarball(tarballUrl, entryPoint) {
       return await response.text();
     }
     
-    // Fallback to GitHub if package has repository
-    const githubUrl = `https://raw.githubusercontent.com/${packageName}/master/${entryPoint}`;
-    const githubRes = await fetch(githubUrl);
+    // Fallback: Try main entry point
+    const fallbackUrl = `https://unpkg.com/${packageName}@${version}`;
+    const fallbackRes = await fetch(fallbackUrl);
     
-    if (githubRes.ok) {
-      return await githubRes.text();
+    if (fallbackRes.ok) {
+      return await fallbackRes.text();
     }
     
     return null;
@@ -424,12 +411,12 @@ async function handleCompileRequest(request, corsHeaders) {
   try {
     const { code } = await request.json();
     
-    // Use Babel standalone via CDN
+    // Use Babel via CDN
     const babelUrl = 'https://unpkg.com/@babel/standalone@7.23.2/babel.min.js';
     
-    // Simple transformation for now
+    // In a real implementation, you'd load Babel and compile
+    // For now, simple transformation
     const transformed = code
-      .replace(/React\.createElement/g, 'OpenWebOS.createElement')
       .replace(/import\s+React[^;]+;/g, '')
       .replace(/from\s+['"]react['"]/g, '')
       .replace(/{\/\*[\s\S]*?\*\/}/g, '');
@@ -440,7 +427,7 @@ async function handleCompileRequest(request, corsHeaders) {
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: corsHeaders
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
 }
@@ -489,12 +476,12 @@ async function handleBundleRequest(request, corsHeaders) {
       bundle: bundle,
       count: Object.keys(bundle).length
     }), {
-      headers: corsHeaders
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: corsHeaders
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
 }
@@ -508,7 +495,7 @@ async function handleSearchRequest(request, corsHeaders) {
     if (!query) {
       return new Response(JSON.stringify({ error: 'Search query required' }), {
         status: 400,
-        headers: corsHeaders
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
     
@@ -536,12 +523,12 @@ async function handleSearchRequest(request, corsHeaders) {
       total: searchData.total,
       results: results
     }), {
-      headers: corsHeaders
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: corsHeaders
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
 }
