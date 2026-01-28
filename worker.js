@@ -39,7 +39,7 @@ window.OpenWebOS = {
     // Create loading promise
     const loadPromise = (async () => {
       try {
-        const res = await fetch('/v1/pkg/' + encodeURIComponent(packageName) + '@' + encodeURIComponent(version));
+       const res = await fetch('https://openwebosapi.2029ijones.workers.dev/v1/pkg/' + encodeURIComponent(packageName) + '@' + encodeURIComponent(version));
         
         if (!res.ok) {
           const error = await res.text();
