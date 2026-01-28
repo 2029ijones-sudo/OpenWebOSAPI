@@ -15,9 +15,9 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
     
-    // Routes
-    if (path === '/v1/embed.js') {
-      const script = `// OpenWebOS API v3.0
+  // Routes
+if (path === '/v1/embed.js') {
+  const script = `// OpenWebOS API v3.0
 window.OpenWebOS = {
   version: '3.0.0',
   cache: new Map(),
@@ -102,17 +102,24 @@ window.OpenWebOS = {
     return await res.text();
   },
   
-  clearCache: () => {
+  clearCache: function() {
     this.cache.clear();
   }
 };
 
-console.log('OpenWebOS API loaded. Use OpenWebOS.require("package-name")');`;
-      
-      return new Response(script, {
-        headers: { ...corsHeaders, 'Content-Type': 'application/javascript' }
-      });
-    }
+// Auto-initialize
+(function() {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('DOMContentLoaded', function() {
+      console.log('OpenWebOS API v3.0.0 loaded. Use OpenWebOS.require("package-name")');
+    });
+  }
+})();`;
+  
+  return new Response(script, {
+    headers: { ...corsHeaders, 'Content-Type': 'application/javascript' }
+  });
+}
     
     // Handle package requests - COMPLEX PROPER WAY
     if (path.startsWith('/v1/pkg/')) {
