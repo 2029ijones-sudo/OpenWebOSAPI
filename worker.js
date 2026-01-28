@@ -1,4 +1,4 @@
-// worker.js - COMPLETE OpenWebOS API
+// worker.js - FIXED OpenWebOS API
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -15,9 +15,9 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
     
-  // Routes
-if (path === '/v1/embed.js') {
-  const script = `// OpenWebOS API v3.0
+    // Routes
+    if (path === '/v1/embed.js') {
+      const script = `// OpenWebOS API v3.0
 window.OpenWebOS = {
   version: '3.0.0',
   cache: new Map(),
@@ -115,11 +115,11 @@ window.OpenWebOS = {
     });
   }
 })();`;
-  
-  return new Response(script, {
-    headers: { ...corsHeaders, 'Content-Type': 'application/javascript' }
-  });
-}
+      
+      return new Response(script, {
+        headers: { ...corsHeaders, 'Content-Type': 'application/javascript' }
+      });
+    }
     
     // Handle package requests - COMPLEX PROPER WAY
     if (path.startsWith('/v1/pkg/')) {
@@ -138,25 +138,33 @@ window.OpenWebOS = {
       return handleSearchRequest(request, corsHeaders);
     }
     
-    // API Documentation
-    return new Response(JSON.stringify({
-      name: 'OpenWebOS API',
-      version: '3.0.0',
-      description: 'Use ANY npm package in browser',
-      host: host,
-      endpoints: {
-        embed: '/v1/embed.js',
-        package: '/v1/pkg/{name}@{version}',
-        compile: '/v1/compile',
-        bundle: '/v1/bundle',
-        search: '/v1/search'
-      },
-      example: `Add <script src="https://${host}/v1/embed.js"></script> to HTML`
-    }), {
+    // Only show API info for root path
+    if (path === '/' || path === '') {
+      return new Response(JSON.stringify({
+        name: 'OpenWebOS API',
+        version: '3.0.0',
+        description: 'Use ANY npm package in browser',
+        host: host,
+        endpoints: {
+          embed: '/v1/embed.js',
+          package: '/v1/pkg/{name}@{version}',
+          compile: '/v1/compile',
+          bundle: '/v1/bundle',
+          search: '/v1/search'
+        },
+        example: `Add <script src="https://${host}/v1/embed.js"></script> to HTML`
+      }), {
+        headers: corsHeaders
+      });
+    }
+    
+    // Return 404 for any other path
+    return new Response('Not Found', {
+      status: 404,
       headers: corsHeaders
     });
-  }
-};
+  } // ← THIS WAS MISSING: closes fetch() function
+}; // ← THIS WAS MISSING: closes export default object
 
 // COMPLEX: Handle package requests properly
 async function handlePackageRequest(path, corsHeaders) {
