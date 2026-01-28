@@ -702,8 +702,6 @@ async function handlePackageRequest(path, corsHeaders, env) {
     
     // Try multiple CDNs
     const sources = [
-      { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
-      { url: `https://esm.sh/${packageName}@${version}/${cleanEntryPoint}`, type: 'esm' },
       { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/+esm`, type: 'esm' },
       { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/${cleanEntryPoint}`, type: 'auto' },
       { url: `https://unpkg.com/${packageName}@${version}`, type: 'auto' },
