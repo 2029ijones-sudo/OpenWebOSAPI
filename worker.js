@@ -575,6 +575,10 @@ window.OpenWebOS = {
     if (path === '/v1/search') {
       return await handleSearchRequest(request, corsHeaders);
     }
+
+if (path === '/v1/load') {
+  return await handleBundleLoad(request, corsHeaders, host);
+}
     
     // Only show API info for root path
     if (path === '/' || path === '') {
@@ -1343,5 +1347,255 @@ async function handleSearchRequest(request, corsHeaders) {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
+  }
+}
+
+// ==================== ADD THIS FUNCTION HERE ====================
+// Multi-package loader handler
+async function handleBundleLoad(request, corsHeaders, host) {
+  try {
+    const url = new URL(request.url);
+    const packagesParam = url.searchParams.get('packages');
+    
+    if (!packagesParam) {
+      return new Response(JSON.stringify({
+        error: 'Missing packages parameter',
+        example: '/v1/load?packages=lodash,axios,date-fns',
+        usage: 'Load multiple npm packages with one script tag'
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // Parse packages list
+    const packages = packagesParam.split(',')
+      .map(p => p.trim())
+      .filter(p => p);
+    
+    if (packages.length === 0) {
+      return new Response(JSON.stringify({
+        error: 'No packages specified'
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // Limit to reasonable number
+    const limitedPackages = packages.slice(0, 10);
+    
+    // Generate loader script
+    const script = generateBundleLoader(limitedPackages, host);
+    
+    return new Response(script, {
+      headers: {
+        ...corsHeaders,
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'public, max-age=3600'
+      }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      error: error.message
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+// ==================== ADD THIS FUNCTION TOO ====================
+function generateBundleLoader(packages, host) {
+  const packagesList = packages.map(p => `"${p}"`).join(', ');
+  const packagesString = packages.join(', ');
+  
+  return `// OpenWebOS Bundle Loader - Loads: ${packagesString}
+(function() {
+  const API_BASE = 'https://${host}';
+  const PACKAGES = [${packagesList}];
+  
+  // Create OpenWebOS if it doesn't exist
+  window.OpenWebOS = window.OpenWebOS || {
+    version: '3.0.0',
+    cache: new Map(),
+    pendingPromises: new Map(),
+    
+    require: async function(packageName, version = 'latest') {
+      const cacheKey = \`\${packageName}@\${version}\`;
+      
+      // Check cache
+      if (this.cache.has(cacheKey)) {
+        return Promise.resolve(this.cache.get(cacheKey));
+      }
+      
+      // Check if already loading
+      if (this.pendingPromises.has(cacheKey)) {
+        return this.pendingPromises.get(cacheKey);
+      }
+      
+      // Create loading promise
+      const loadPromise = (async () => {
+        try {
+          const res = await fetch(API_BASE + '/v1/pkg/' + encodeURIComponent(packageName) + '@' + encodeURIComponent(version));
+          
+          if (!res.ok) {
+            const error = await res.text();
+            throw new Error(\`Failed to load \${packageName}@\${version}: \${error}\`);
+          }
+          
+          const data = await res.json();
+          
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          
+          // Create module object
+          const module = { exports: {} };
+          
+          // Built-in modules
+          const builtIns = {
+            'process': { 
+              env: { NODE_ENV: 'development' },
+              version: '18.0.0',
+              cwd: () => '/',
+              nextTick: (cb) => setTimeout(cb, 0)
+            },
+            'console': console,
+            'Buffer': { 
+              from: (str) => new TextEncoder().encode(str),
+              alloc: (size) => new Uint8Array(size)
+            }
+          };
+          
+          const require = (dep) => {
+            if (dep.startsWith('.')) {
+              throw new Error(\`Relative requires not supported: \${dep}\`);
+            }
+            
+            if (builtIns[dep]) {
+              return builtIns[dep];
+            }
+            
+            // Load external package
+            return window.OpenWebOS.require(dep);
+          };
+          
+          // Execute the code
+          const wrapperFunction = new Function(
+            'module', 'exports', 'require', 'process', 'Buffer', 'console',
+            \`
+              (function(module, exports, require, process, Buffer, console) {
+                \${data.code}
+              })(module, exports, require, process, Buffer, console);
+            \`
+          );
+          
+          wrapperFunction(
+            module,
+            module.exports,
+            require,
+            builtIns.process,
+            builtIns.Buffer,
+            console
+          );
+          
+          // Handle default export
+          let result = module.exports;
+          if (result && typeof result === 'object' && result.__esModule && result.default !== undefined) {
+            result = result.default;
+          }
+          
+          // Cache the result
+          this.cache.set(cacheKey, result);
+          
+          return result;
+          
+        } catch (error) {
+          console.error(\`OpenWebOS: Failed to load \${packageName}@\${version}:\`, error);
+          throw error;
+        } finally {
+          // Clean up pending promise
+          this.pendingPromises.delete(cacheKey);
+        }
+      })();
+      
+      // Store the promise
+      this.pendingPromises.set(cacheKey, loadPromise);
+      
+      return loadPromise;
+    },
+    
+    clearCache: function() {
+      this.cache.clear();
+      this.pendingPromises.clear();
+    }
+  };
+  
+  // Pre-load all packages in background
+  Promise.allSettled(
+    PACKAGES.map(pkg => {
+      const [name, version = 'latest'] = pkg.split('@');
+      return window.OpenWebOS.require(name, version)
+        .then(mod => {
+          console.log(\`✅ Pre-loaded: \${pkg}\`);
+          return mod;
+        })
+        .catch(err => {
+          console.warn(\`⚠️ Failed to pre-load \${pkg}: \`, err.message);
+          return null;
+        });
+    })
+  ).then(results => {
+    console.log('🎉 OpenWebOS bundle loaded:', PACKAGES.join(', '));
+    console.log('📦 Packages available as: window._ (lodash), window.axios, etc.');
+    
+    // Also attach to window for convenience
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled' && result.value) {
+        const pkg = PACKAGES[i];
+        const name = pkg.split('@')[0];
+        
+        // Special handling for common packages
+        if (name === 'lodash') window._ = result.value;
+        else if (name === 'axios') window.axios = result.value;
+        else if (name === 'moment') window.moment = result.value;
+        else if (name === 'uuid') window.uuid = result.value;
+        else if (name === 'date-fns') window.dateFns = result.value;
+        else if (name === 'ramda') window.R = result.value;
+        
+        // Generic fallback
+        window[name] = result.value;
+      }
+    });
+    
+    // Dispatch event when all packages are loaded
+    window.dispatchEvent(new CustomEvent('openwebos:loaded', {
+      detail: { packages: PACKAGES }
+    }));
+  });
+  
+  // Export convenience function
+  window.loadPackages = async function(packages) {
+    if (!packages) packages = PACKAGES;
+    if (typeof packages === 'string') packages = [packages];
+    
+    const results = {};
+    await Promise.all(
+      packages.map(async pkg => {
+        const [name, version = 'latest'] = pkg.split('@');
+        try {
+          results[name] = await window.OpenWebOS.require(name, version);
+        } catch (error) {
+          results[name] = { error: error.message };
+        }
+      })
+    );
+    
+    return results;
+  };
+})();`;
+}
   }
 }
