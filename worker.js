@@ -764,26 +764,233 @@ const sources = [
       }
     }
     
- if (!code) {
+if (!code) {
   throw new Error(`Could not retrieve source code. Package may not be browser-compatible.`);
 }
 
-// FIX: Transform esm.sh/skypack ES module exports to CommonJS
-let processedCode = code;
-
-if (sourceUsed && (sourceUsed.includes('esm.sh') || sourceUsed.includes('skypack.dev'))) {
-  // Check if it's an ES module re-export (common for esm.sh/skypack)
-  if (code.includes('export * from') || code.includes('export {') || code.trim().startsWith('export')) {
-    // This is an ES module file - we need to handle it differently
+// ============ INLINE COMPREHENSIVE CONVERTER FUNCTION ============
+function convertESMtoCommonJS(esmCode, packageName, version) {
+  let outputCode = esmCode;
+  let hasImports = false;
+  let hasExports = false;
+  
+  // Track all imports and exports for proper conversion
+  const imports = [];
+  const exports = [];
+  
+  // ----- PHASE 1: PARSE IMPORTS -----
+  const importPatterns = [
+    // import defaultExport from "module"
+    /import\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]/g,
+    // import * as name from "module"
+    /import\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]/g,
+    // import { export1 } from "module"
+    /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g,
+    // import { export1 as alias1 } from "module"
+    /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g, // Same pattern, handle in callback
+    // import defaultExport, { export1 } from "module"
+    /import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g,
+    // import "module" (side effect)
+    /import\s+['"]([^'"]+)['"]/g,
+    // Dynamic import
+    /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+  ];
+  
+  // Process each import pattern
+  importPatterns.forEach((pattern, index) => {
+    outputCode = outputCode.replace(pattern, (match, ...args) => {
+      hasImports = true;
+      let result = '';
+      
+      switch (index) {
+        case 0: // import defaultExport from "module"
+          const [name, module] = args.slice(0, 2);
+          imports.push({ type: 'default', name, module });
+          result = `const ${name} = require('${module}').default || require('${module}');`;
+          break;
+          
+        case 1: // import * as name from "module"
+          const [namespaceName, namespaceModule] = args.slice(0, 2);
+          imports.push({ type: 'namespace', name: namespaceName, module: namespaceModule });
+          result = `const ${namespaceName} = require('${namespaceModule}');`;
+          break;
+          
+        case 2: // import { export1 } from "module"
+        case 3: // import { export1 as alias1 } from "module"
+          const exportList = args[0];
+          const exportModule = args[1];
+          
+          const exportsArray = exportList.split(',').map(e => e.trim());
+          const importStatements = exportsArray.map(e => {
+            if (e.includes(' as ')) {
+              const [original, alias] = e.split(' as ').map(s => s.trim());
+              imports.push({ type: 'named', original, alias, module: exportModule });
+              return `const ${alias} = require('${exportModule}').${original};`;
+            } else {
+              imports.push({ type: 'named', original: e, alias: e, module: exportModule });
+              return `const ${e} = require('${exportModule}').${e};`;
+            }
+          });
+          
+          result = importStatements.join('\n');
+          break;
+          
+        case 4: // import defaultExport, { export1 } from "module"
+          const [defaultName, namedExports, combinedModule] = args.slice(0, 3);
+          
+          // Handle default import
+          imports.push({ type: 'default', name: defaultName, module: combinedModule });
+          const defaultImport = `const ${defaultName} = require('${combinedModule}').default || require('${combinedModule}');`;
+          
+          // Handle named imports
+          const namedExportsArray = namedExports.split(',').map(e => e.trim());
+          const namedImportStatements = namedExportsArray.map(e => {
+            if (e.includes(' as ')) {
+              const [original, alias] = e.split(' as ').map(s => s.trim());
+              imports.push({ type: 'named', original, alias, module: combinedModule });
+              return `const ${alias} = require('${combinedModule}').${original};`;
+            } else {
+              imports.push({ type: 'named', original: e, alias: e, module: combinedModule });
+              return `const ${e} = require('${combinedModule}').${e};`;
+            }
+          });
+          
+          result = [defaultImport, ...namedImportStatements].join('\n');
+          break;
+          
+        case 5: // import "module" (side effect)
+          const sideEffectModule = args[0];
+          imports.push({ type: 'side-effect', module: sideEffectModule });
+          result = `require('${sideEffectModule}');`;
+          break;
+          
+        case 6: // Dynamic import
+          const dynamicModule = args[0];
+          imports.push({ type: 'dynamic', module: dynamicModule });
+          result = `Promise.resolve().then(() => require('${dynamicModule}'));`;
+          break;
+      }
+      
+      return result;
+    });
+  });
+  
+  // ----- PHASE 2: HANDLE RE-EXPORTS (export * from) -----
+  // export * from "module"
+  const exportStarPattern = /export\s+\*\s+from\s+['"]([^'"]+)['"]/g;
+  outputCode = outputCode.replace(exportStarPattern, (match, module) => {
+    hasExports = true;
+    return `Object.assign(module.exports, require('${module}'));`;
+  });
+  
+  // export * as namespace from "module"
+  const exportStarAsPattern = /export\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]/g;
+  outputCode = outputCode.replace(exportStarAsPattern, (match, name, module) => {
+    hasExports = true;
+    return `module.exports.${name} = require('${module}');`;
+  });
+  
+  // export { name } from "module"
+  const exportFromPattern = /export\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g;
+  outputCode = outputCode.replace(exportFromPattern, (match, exportList, module) => {
+    hasExports = true;
+    const exportsArray = exportList.split(',').map(e => e.trim());
+    const exportStatements = exportsArray.map(e => {
+      if (e.includes(' as ')) {
+        const [original, renamed] = e.split(' as ').map(s => s.trim());
+        return `module.exports.${renamed} = require('${module}').${original};`;
+      } else {
+        return `module.exports.${e} = require('${module}').${e};`;
+      }
+    });
+    return exportStatements.join('\n');
+  });
+  
+  // ----- PHASE 3: HANDLE DIRECT EXPORTS -----
+  // export default expression
+  const exportDefaultPattern = /export\s+default\s+([^;]+);?/g;
+  outputCode = outputCode.replace(exportDefaultPattern, (match, expression) => {
+    hasExports = true;
+    return `module.exports.default = ${expression};`;
+  });
+  
+  // export default function name() {}
+  const exportDefaultFuncPattern = /export\s+default\s+function\s+([\w$]+)\s*\([^)]*\)\s*\{[^}]*\}/gs;
+  outputCode = outputCode.replace(exportDefaultFuncPattern, (match, funcName) => {
+    hasExports = true;
+    return match.replace('export default ', '') + `\nmodule.exports.default = ${funcName};`;
+  });
+  
+  // export default class name {}
+  const exportDefaultClassPattern = /export\s+default\s+class\s+([\w$]+)\s*\{[^}]*\}/gs;
+  outputCode = outputCode.replace(exportDefaultClassPattern, (match, className) => {
+    hasExports = true;
+    return match.replace('export default ', '') + `\nmodule.exports.default = ${className};`;
+  });
+  
+  // export { name1, name2 }
+  const exportNamedPattern = /export\s+\{([^}]+)\}\s*;?/g;
+  outputCode = outputCode.replace(exportNamedPattern, (match, exportList) => {
+    hasExports = true;
+    const exportsArray = exportList.split(',').map(e => e.trim());
+    const exportStatements = exportsArray.map(e => {
+      if (e.includes(' as ')) {
+        const [original, renamed] = e.split(' as ').map(s => s.trim());
+        return `module.exports.${renamed} = ${original};`;
+      } else {
+        return `module.exports.${e} = ${e};`;
+      }
+    });
+    return exportStatements.join('\n');
+  });
+  
+  // export var/let/const name = value
+  const exportVarPattern = /export\s+(var|let|const)\s+([\w$]+)\s*=\s*([^;]+);?/g;
+  outputCode = outputCode.replace(exportVarPattern, (match, declaration, name, value) => {
+    hasExports = true;
+    return `${declaration} ${name} = ${value};\nmodule.exports.${name} = ${name};`;
+  });
+  
+  // export function name() {}
+  const exportFunctionPattern = /export\s+function\s+([\w$]+)\s*\([^)]*\)\s*\{[^}]*\}/gs;
+  outputCode = outputCode.replace(exportFunctionPattern, (match, funcName) => {
+    hasExports = true;
+    return match.replace('export ', '') + `\nmodule.exports.${funcName} = ${funcName};`;
+  });
+  
+  // export class name {}
+  const exportClassPattern = /export\s+class\s+([\w$]+)\s*\{[^}]*\}/gs;
+  outputCode = outputCode.replace(exportClassPattern, (match, className) => {
+    hasExports = true;
+    return match.replace('export ', '') + `\nmodule.exports.${className} = ${className};`;
+  });
+  
+  // ----- PHASE 4: ADD WRAPPER AND CLEANUP -----
+  
+  // Remove any remaining export statements we might have missed
+  outputCode = outputCode.replace(/^\s*export\s+/gm, '');
+  
+  // Check if we have ES module indicators
+  const isESModule = hasImports || hasExports || 
+                    esmCode.includes('import ') || 
+                    esmCode.includes('export ');
+  
+  // If it's an ES module, wrap it properly
+  if (isESModule) {
+    // Check if it's a simple re-export wrapper (common in esm.sh)
+    const isReexportWrapper = esmCode.trim().startsWith('export') && 
+                             (esmCode.includes('export * from') || 
+                              esmCode.includes('export {') || 
+                              esmCode.includes('export default'));
     
-    if (code.includes('export * from "/')) {
-      // esm.sh format: export * from "/package@version/..."
-      const match = code.match(/export \* from "([^"]+)"/);
+    if (isReexportWrapper && esmCode.includes('export * from "/')) {
+      // Handle esm.sh format: export * from "/package@version/..."
+      const match = esmCode.match(/export \* from "([^"]+)"/);
       if (match) {
         const modulePath = match[1];
-        // Create code that will fetch and execute the actual module
-        processedCode = `
-          // ES Module loader for ${packageName}
+        // Create a loader that fetches the actual module
+        return `
+          // ES Module loader for ${packageName} (esm.sh re-export format)
           const actualModuleUrl = '${modulePath}';
           let moduleLoaded = false;
           let moduleExports = null;
@@ -791,113 +998,70 @@ if (sourceUsed && (sourceUsed.includes('esm.sh') || sourceUsed.includes('skypack
           async function loadESM() {
             if (moduleLoaded) return moduleExports;
             
-            const response = await fetch(actualModuleUrl);
-            if (!response.ok) {
-              throw new Error('Failed to load ESM module from ' + actualModuleUrl);
-            }
-            
-            const esmCode = await response.text();
-            
-            // Create a module context
-            const module = { exports: {} };
-            const exports = module.exports;
-            
-            // We need to handle ES module syntax
-            // For now, just try to execute it as-is
             try {
-              // Wrap in a function to capture exports
-              const wrapper = new Function('module', 'exports', 'require', \`
-                // Convert ES module to CommonJS
-                const __exports = {};
-                \${esmCode
-                  .replace(/export default/g, '__exports.default =')
-                  .replace(/export const (\w+)/g, '__exports.$1 =')
-                  .replace(/export function (\w+)/g, '__exports.$1 = function')
-                  .replace(/export class (\w+)/g, '__exports.$1 = class')
-                  .replace(/export \{([^}]+)\}/g, (match, exports) => {
-                    return exports.split(',').map(e => e.trim()).map(e => {
-                      const parts = e.split(' as ');
-                      if (parts.length === 2) {
-                       return '__exports["' + parts[1] + '"] = ' + parts[0] + ';';
-                      }
-                     return '__exports["' + e + '"] = ' + e + ';';
-                    }).join('\\n');
-                  })
-                }
-                module.exports = __exports;
-              \`);
+              const response = await fetch(actualModuleUrl);
+              if (!response.ok) {
+                throw new Error('Failed to load ESM module from ' + actualModuleUrl);
+              }
               
-              wrapper(module, module.exports, require);
-              moduleExports = module.exports;
+              const esmCode = await response.text();
+              
+              // Convert the fetched ES module to CommonJS
+              const convertedCode = (function() {
+                ${convertESMtoCommonJS(esmCode, packageName, version)}
+                return module.exports;
+              })();
+              
+              moduleExports = convertedCode;
               moduleLoaded = true;
               return moduleExports;
               
             } catch (error) {
-              console.error('Failed to process ESM module:', error);
+              console.error('[OpenWebOS] Failed to load ESM module for ${packageName}:', error);
               // Return empty object as fallback
               return {};
             }
           }
           
-          // Return a promise that loads the module
+          // Export a promise that loads the module
           module.exports = loadESM();
         `;
       }
-    } else if (code.includes('export default') && !code.includes('export * from')) {
-      // Simple export default - convert to module.exports
-      processedCode = code.replace(/export default\s+([^;]+);/g, 'module.exports = $1;');
-    } else {
-      // Generic ES module - try to convert
-      processedCode = `
-        // Converted ES module for ${packageName}
-        const exports = {};
-        ${code
-          .replace(/export default ([^;]+);/g, 'exports.default = $1;')
-          .replace(/export const (\w+) =/g, 'exports.$1 =')
-          .replace(/export function (\w+)/g, 'exports.$1 = function')
-          .replace(/export class (\w+)/g, 'exports.$1 = class')
-          .replace(/export \{([^}]+)\}/g, (match, exportList) => {
-            return exportList.split(',').map(e => e.trim()).map(e => {
-              const parts = e.split(' as ');
-              if (parts.length === 2) {
-            return 'exports["' + e + '"] = ' + e + ';';
-              }
-              return 'exports["' + parts[1] + '"] = ' + parts[0] + ';';
-            }).join('\n');
-          })
-        }
-        module.exports = exports;
-      `;
     }
-  } else {
-    // Not an ES module, use original processing
-    processedCode = code;
     
-    // Remove Node.js shebang
-    processedCode = processedCode.replace(/^#!.*\n/, '');
-    
-    // Simple require replacement (don't overcomplicate it)
-    processedCode = processedCode.replace(
-      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-      (match, specifier) => {
-        if (specifier.startsWith('./') || specifier.startsWith('../')) {
-          return match; // Keep relative
+    // For other ES modules, wrap in IIFE
+    outputCode = `
+      (function() {
+        const module = { exports: {} };
+        const exports = module.exports;
+        
+        ${outputCode}
+        
+        // Handle default export if not already handled
+        if (typeof module.exports.default !== 'undefined' && 
+            Object.keys(module.exports).length === 1 && 
+            module.exports.default !== undefined) {
+          module.exports = module.exports.default;
         }
-        return `require('${specifier}')`;
-      }
-    );
-    
-    // Handle ES module exports
-    if (processedCode.includes('export default')) {
-      processedCode = processedCode.replace(/export default\s+([^;]+);/g, 'module.exports = $1;');
-    }
+        
+        return module.exports;
+      })();
+    `;
   }
-} else {
-  // Not from esm.sh or skypack, use original processing
-  processedCode = code;
   
-  // Remove Node.js shebang
-  processedCode = processedCode.replace(/^#!.*\n/, '');
+  return outputCode;
+}
+// ============ END OF CONVERTER FUNCTION ============
+
+// FIX: Transform esm.sh/skypack ES module exports to CommonJS
+let processedCode = code;
+
+if (sourceUsed && (sourceUsed.includes('esm.sh') || sourceUsed.includes('skypack.dev'))) {
+  // Use the comprehensive converter for ES modules
+  processedCode = convertESMtoCommonJS(code, packageName, version);
+} else {
+  // Original processing for non-ESM sources
+  processedCode = code.replace(/^#!.*\n/, '');
   
   // Simple require replacement (don't overcomplicate it)
   processedCode = processedCode.replace(
@@ -910,7 +1074,7 @@ if (sourceUsed && (sourceUsed.includes('esm.sh') || sourceUsed.includes('skypack
     }
   );
   
-  // Handle ES module exports
+  // Handle ES module exports if present
   if (processedCode.includes('export default')) {
     processedCode = processedCode.replace(/export default\s+([^;]+);/g, 'module.exports = $1;');
   }
