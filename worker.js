@@ -700,75 +700,128 @@ async function handlePackageRequest(path, corsHeaders, env) {
       cleanEntryPoint = cleanEntryPoint.substring(2);
     }
     
-   // Try multiple CDNs - USE ONLY THESE TWO
+  // Try multiple CDNs - Better order and more sources
 const sources = [
+  // Try jsDelivr first (most reliable, no blocking)
+  { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}/+esm`, type: 'esm' },
+  { url: `https://cdn.jsdelivr.net/npm/${packageName}@${version}`, type: 'commonjs' },
+  
+  // Then unpkg (also reliable)
+  { url: `https://unpkg.com/${packageName}@${version}?module`, type: 'esm' },
+  { url: `https://unpkg.com/${packageName}@${version}`, type: 'commonjs' },
+  
+  // Then jspm.dev (good ESM support)
+  { url: `https://jspm.dev/${packageName}@${version}`, type: 'esm' },
+  
+  // Finally esm.sh and skypack (they block more often)
   { url: `https://esm.sh/${packageName}@${version}`, type: 'esm' },
-  { url: `https://esm.sh/${packageName}`, type: 'esm' },
   { url: `https://cdn.skypack.dev/${packageName}@${version}`, type: 'esm' },
-  { url: `https://cdn.skypack.dev/${packageName}`, type: 'esm' },
 ];
     
-    let code = null;
-    let sourceUsed = null;
+let code = null;
+let sourceUsed = null;
+
+// Generate realistic browser headers
+function getRandomUserAgent() {
+  const agents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
+  ];
+  return agents[Math.floor(Math.random() * agents.length)];
+}
+
+for (const source of sources) {
+  try {
+    console.log(`Trying to fetch from: ${source.url}`);
     
-    for (const source of sources) {
-      try {
-        const response = await fetch(source.url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Sec-Fetch-Dest': 'script',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'cross-site',
-            'Referer': 'https://openwebosapi.2029ijones.workers.dev/',
-            'Origin': 'https://openwebosapi.2029ijones.workers.dev'
-          }
-        });
-        
-        if (response.ok) {
-          code = await response.text();
-          sourceUsed = source.url;
-          break;
-        }
-      } catch (error) {
+    const userAgent = getRandomUserAgent();
+    const referer = Math.random() > 0.5 ? 'https://www.google.com/' : 'https://github.com/';
+    
+    const response = await fetch(source.url, {
+      headers: {
+        'User-Agent': userAgent,
+        'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Sec-Fetch-Dest': 'script',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Site': 'cross-site',
+        'Referer': referer,
+        'Origin': new URL(referer).origin,
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'DNT': '1', // Do Not Track
+      },
+      // Add Cloudflare cache settings
+      cf: {
+        cacheTtl: 86400,
+        cacheEverything: true,
+        // Add some jitter to look more human
+        polish: 'off'
+      }
+    });
+    
+    if (response.ok) {
+      code = await response.text();
+      sourceUsed = source.url;
+      console.log(`✅ Successfully fetched from: ${source.url}`);
+      break;
+    } else {
+      console.log(`❌ Failed to fetch from ${source.url}: ${response.status} ${response.statusText}`);
+      
+      // If it's a blocking response (403, 429, 503), skip this CDN
+      if ([403, 429, 503].includes(response.status)) {
         continue;
       }
     }
-    
-    // FIX: Missing closing braces - the fallback code was in the wrong place!
-    if (!code) {
-      // Try to get from unpkg directly (fallback)
-      try {
-        const unpkgUrl = `https://unpkg.com/${packageName}@${version}`;
-        const response = await fetch(unpkgUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Sec-Fetch-Dest': 'script',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'cross-site',
-            'Referer': 'https://openwebosapi.2029ijones.workers.dev/',
-            'Origin': 'https://openwebosapi.2029ijones.workers.dev'
-          }
-        });
-        if (response.ok) {
-          code = await response.text();
-          sourceUsed = unpkgUrl;
-        }
-      } catch (error) {
-        // Ignore
-      }
-    }
-    
-if (!code) {
-  throw new Error(`Could not retrieve source code. Package may not be browser-compatible.`);
+  } catch (error) {
+    console.log(`❌ Error fetching from ${source.url}:`, error.message);
+    continue;
+  }
 }
 
-// ============ INLINE COMPREHENSIVE CONVERTER FUNCTION ============
+// If all CDNs fail, try a direct npm registry approach
+if (!code) {
+  try {
+    console.log('All CDNs failed, trying npm registry fallback...');
+    
+    // Get package metadata to find the main file
+    const registryUrl = `https://registry.npmjs.org/${packageName}/${version}`;
+    const registryRes = await fetch(registryUrl);
+    
+    if (registryRes.ok) {
+      const pkgInfo = await registryRes.json();
+      const mainFile = pkgInfo.main || 'index.js';
+      
+      // Try to get the actual file from unpkg
+      const fileUrl = `https://unpkg.com/${packageName}@${version}/${mainFile}`;
+      const fileResponse = await fetch(fileUrl, {
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Accept': '*/*',
+        }
+      });
+      
+      if (fileResponse.ok) {
+        code = await fileResponse.text();
+        sourceUsed = fileUrl;
+        console.log(`✅ Got package from npm registry fallback: ${fileUrl}`);
+      }
+    }
+  } catch (error) {
+    console.log('Npm registry fallback also failed:', error.message);
+  }
+}
+
+if (!code) {
+  throw new Error(`Could not retrieve source code from any CDN. Package may not be browser-compatible or all CDNs are blocking requests.`);
+}
+
 function convertESMtoCommonJS(esmCode, packageName, version) {
   let outputCode = esmCode;
   let hasImports = false;
@@ -777,6 +830,26 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
   // Track all imports and exports for proper conversion
   const imports = [];
   const exports = [];
+  
+  // ============ NORMALIZE FUNCTION ============
+  function normalizeModulePath(path) {
+    // Convert esm.sh internal paths to package names
+    // "/lodash@4.17.23/es2022/lodash.mjs" -> "lodash@4.17.23"
+    if (path.startsWith('/') && path.includes('@')) {
+      const match = path.match(/\/([^/@]+)@([^/]+)/);
+      if (match) {
+        return `${match[1]}@${match[2]}`;
+      }
+    }
+    // Convert jspm.dev paths
+    if (path.includes('jspm.dev/')) {
+      const match = path.match(/jspm\.dev\/([^/@]+)@([^/]+)/);
+      if (match) {
+        return `${match[1]}@${match[2]}`;
+      }
+    }
+    return path;
+  }
   
   // ----- PHASE 1: PARSE IMPORTS -----
   const importPatterns = [
@@ -806,13 +879,13 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
         case 0: // import defaultExport from "module"
           const [name, module] = args.slice(0, 2);
           imports.push({ type: 'default', name, module });
-          result = `const ${name} = require('${module}').default || require('${module}');`;
+          result = `const ${name} = require('${normalizeModulePath(module)}').default || require('${normalizeModulePath(module)}');`;
           break;
           
         case 1: // import * as name from "module"
           const [namespaceName, namespaceModule] = args.slice(0, 2);
           imports.push({ type: 'namespace', name: namespaceName, module: namespaceModule });
-          result = `const ${namespaceName} = require('${namespaceModule}');`;
+          result = `const ${namespaceName} = require('${normalizeModulePath(namespaceModule)}');`;
           break;
           
         case 2: // import { export1 } from "module"
@@ -825,10 +898,10 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
             if (e.includes(' as ')) {
               const [original, alias] = e.split(' as ').map(s => s.trim());
               imports.push({ type: 'named', original, alias, module: exportModule });
-              return `const ${alias} = require('${exportModule}').${original};`;
+              return `const ${alias} = require('${normalizeModulePath(exportModule)}').${original};`;
             } else {
               imports.push({ type: 'named', original: e, alias: e, module: exportModule });
-              return `const ${e} = require('${exportModule}').${e};`;
+              return `const ${e} = require('${normalizeModulePath(exportModule)}').${e};`;
             }
           });
           
@@ -840,7 +913,7 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
           
           // Handle default import
           imports.push({ type: 'default', name: defaultName, module: combinedModule });
-          const defaultImport = `const ${defaultName} = require('${combinedModule}').default || require('${combinedModule}');`;
+          const defaultImport = `const ${defaultName} = require('${normalizeModulePath(combinedModule)}').default || require('${normalizeModulePath(combinedModule)}');`;
           
           // Handle named imports
           const namedExportsArray = namedExports.split(',').map(e => e.trim());
@@ -848,10 +921,10 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
             if (e.includes(' as ')) {
               const [original, alias] = e.split(' as ').map(s => s.trim());
               imports.push({ type: 'named', original, alias, module: combinedModule });
-              return `const ${alias} = require('${combinedModule}').${original};`;
+              return `const ${alias} = require('${normalizeModulePath(combinedModule)}').${original};`;
             } else {
               imports.push({ type: 'named', original: e, alias: e, module: combinedModule });
-              return `const ${e} = require('${combinedModule}').${e};`;
+              return `const ${e} = require('${normalizeModulePath(combinedModule)}').${e};`;
             }
           });
           
@@ -861,13 +934,13 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
         case 5: // import "module" (side effect)
           const sideEffectModule = args[0];
           imports.push({ type: 'side-effect', module: sideEffectModule });
-          result = `require('${sideEffectModule}');`;
+          result = `require('${normalizeModulePath(sideEffectModule)}');`;
           break;
           
         case 6: // Dynamic import
           const dynamicModule = args[0];
           imports.push({ type: 'dynamic', module: dynamicModule });
-          result = `Promise.resolve().then(() => require('${dynamicModule}'));`;
+          result = `Promise.resolve().then(() => require('${normalizeModulePath(dynamicModule)}'));`;
           break;
       }
       
@@ -880,14 +953,14 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
   const exportStarPattern = /export\s+\*\s+from\s+['"]([^'"]+)['"]/g;
   outputCode = outputCode.replace(exportStarPattern, (match, module) => {
     hasExports = true;
-    return `Object.assign(module.exports, require('${module}'));`;
+    return `Object.assign(module.exports, require('${normalizeModulePath(module)}'));`;
   });
   
   // export * as namespace from "module"
   const exportStarAsPattern = /export\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]/g;
   outputCode = outputCode.replace(exportStarAsPattern, (match, name, module) => {
     hasExports = true;
-    return `module.exports.${name} = require('${module}');`;
+    return `module.exports.${name} = require('${normalizeModulePath(module)}');`;
   });
   
   // export { name } from "module"
@@ -898,9 +971,9 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
     const exportStatements = exportsArray.map(e => {
       if (e.includes(' as ')) {
         const [original, renamed] = e.split(' as ').map(s => s.trim());
-        return `module.exports.${renamed} = require('${module}').${original};`;
+        return `module.exports.${renamed} = require('${normalizeModulePath(module)}').${original};`;
       } else {
-        return `module.exports.${e} = require('${module}').${e};`;
+        return `module.exports.${e} = require('${normalizeModulePath(module)}').${e};`;
       }
     });
     return exportStatements.join('\n');
@@ -988,6 +1061,16 @@ function convertESMtoCommonJS(esmCode, packageName, version) {
       const match = esmCode.match(/export \* from "([^"]+)"/);
       if (match) {
         const modulePath = match[1];
+        const normalizedPath = normalizeModulePath(modulePath);
+        
+        // Create a direct require instead of a loader for esm.sh paths
+        if (modulePath.startsWith('/')) {
+          return `
+            // Direct require for ${packageName} (converted from esm.sh path)
+            module.exports = require('${normalizedPath}');
+          `;
+        }
+        
         // Create a loader that fetches the actual module
         return `
           // ES Module loader for ${packageName} (esm.sh re-export format)
