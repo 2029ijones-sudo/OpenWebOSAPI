@@ -818,9 +818,9 @@ if (sourceUsed && (sourceUsed.includes('esm.sh') || sourceUsed.includes('skypack
                     return exports.split(',').map(e => e.trim()).map(e => {
                       const parts = e.split(' as ');
                       if (parts.length === 2) {
-                        return \`__exports["\${parts[1]}"] = \${parts[0]};\`;
+                       return '__exports["' + parts[1] + '"] = ' + parts[0] + ';';
                       }
-                      return \`__exports["\${e}"] = \${e};\`;
+                     return '__exports["' + e + '"] = ' + e + ';';
                     }).join('\\n');
                   })
                 }
@@ -860,9 +860,9 @@ if (sourceUsed && (sourceUsed.includes('esm.sh') || sourceUsed.includes('skypack
             return exportList.split(',').map(e => e.trim()).map(e => {
               const parts = e.split(' as ');
               if (parts.length === 2) {
-                return \`exports["\${parts[1]}"] = \${parts[0]};\`;
+            return 'exports["' + e + '"] = ' + e + ';';
               }
-              return \`exports["\${e}"] = \${e};\`;
+              return 'exports["' + parts[1] + '"] = ' + parts[0] + ';';
             }).join('\n');
           })
         }
