@@ -642,31 +642,33 @@ async function handlePackageRequest(path, corsHeaders, env) {
       });
     }
     
-    // Get package info from npm registry
-    const registryUrl = version === 'latest' 
-      ? `https://registry.npmjs.org/${encodeURIComponent(packageName)}`
-      : `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
-    
-    const registryRes = await fetch(registryUrl, {
-      headers: {
-        'User-Agent': 'OpenWebOS/3.0.0',
-        'Accept': 'application/json'
-      }
+   // Get package info from npm registry
+const registryUrl = version === 'latest' 
+  ? `https://registry.npmjs.org/${encodeURIComponent(packageName)}`
+  : `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
+
+// FIX 1: Change variable name from 'response' to 'registryRes'
+// FIX 2: Change 'source.url' to 'registryUrl'
+// FIX 3: Accept header should be 'application/json' not 'application/javascript'
+const registryRes = await fetch(registryUrl, {
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json'  // ← JSON for npm registry
+  }
+});
+
+if (!registryRes.ok) {
+  if (registryRes.status === 404) {
+    return new Response(JSON.stringify({ 
+      error: `Package "${packageName}" not found`,
+      suggestion: 'Check the package name or try a different version'
+    }), { 
+      status: 404,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
-    
-    if (!registryRes.ok) {
-      if (registryRes.status === 404) {
-        return new Response(JSON.stringify({ 
-          error: `Package "${packageName}" not found`,
-          suggestion: 'Check the package name or try a different version'
-        }), { 
-          status: 404,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-      throw new Error(`Registry error: ${registryRes.status} ${registryRes.statusText}`);
-    }
-    
+  }
+  throw new Error(`Registry error: ${registryRes.status} ${registryRes.statusText}`);
+}
     const packageData = await registryRes.json();
     
     // Get actual version if 'latest' was requested
@@ -715,10 +717,10 @@ async function handlePackageRequest(path, corsHeaders, env) {
       try {
         const response = await fetch(source.url, {
           headers: {
-            'User-Agent': 'OpenWebOS/3.0.0',
-            'Accept': 'application/javascript, */*'
-          }
-        });
+           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',  // ← CHANGED!
+        'Accept': 'application/javascript, */*'
+      }
+    });
         
         if (response.ok) {
           code = await response.text();
@@ -730,19 +732,24 @@ async function handlePackageRequest(path, corsHeaders, env) {
       }
     }
     
-    if (!code) {
-      // Try to get from unpkg directly
-      try {
-        const unpkgUrl = `https://unpkg.com/${packageName}@${version}`;
-        const response = await fetch(unpkgUrl);
-        if (response.ok) {
-          code = await response.text();
-          sourceUsed = unpkgUrl;
-        }
-      } catch (error) {
-        // Ignore
+  if (!code) {
+  // Try to get from unpkg directly
+  try {
+    const unpkgUrl = `https://unpkg.com/${packageName}@${version}`;
+    const response = await fetch(unpkgUrl, {
+      headers: {  // ← ADD THESE HEADERS!
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/javascript, */*'
       }
+    });
+    if (response.ok) {
+      code = await response.text();
+      sourceUsed = unpkgUrl;
     }
+  } catch (error) {
+    // Ignore
+  }
+}
     
     if (!code) {
       throw new Error(`Could not retrieve source code. Package may not be browser-compatible.`);
@@ -858,10 +865,14 @@ async function handleBundleRequest(request, corsHeaders) {
       try {
         const [name, version = 'latest'] = pkg.split('@');
         
-        // Direct fetch from unpkg
-        const url = `https://unpkg.com/${name}@${version}`;
-        const res = await fetch(url);
-        
+      // TO THIS:
+const url = `https://unpkg.com/${name}@${version}`;
+const res = await fetch(url, {
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/javascript, */*'
+  }
+});
         if (res.ok) {
           const code = await res.text();
           bundle[name] = {
